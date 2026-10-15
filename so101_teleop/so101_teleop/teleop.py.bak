@@ -1,0 +1,193 @@
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+from builtin_interfaces.msg import Duration
+import select
+import sys
+import termios
+import tty
+
+
+class SO101Teleop(Node):
+
+    def __init__(self):
+        super().__init__('so101_teleop')
+
+        self.arm_publisher = self.create_publisher(
+            JointTrajectory, '/arm_controller/joint_trajectory', 10
+        )
+        self.gripper_publisher = self.create_publisher(
+            JointTrajectory, '/gripper_controller/joint_trajectory', 10
+        )
+        self.joint_state_subscription = self.create_subscription(
+            JointState, '/joint_states', self.joint_state_callback, 10
+        )
+
+        self.joint_names = [
+            'shoulder_pan',
+            'shoulder_lift',
+            'elbow_flex',
+            'wrist_flex',
+            'wrist_roll',
+            'gripper',
+        ]
+        self.joint_indices = {
+            name: index for index, name in enumerate(self.joint_names)
+        }
+        self.positions = [0.0] * len(self.joint_names)
+
+        self.step = 0.05
+
+    def joint_state_callback(self, msg):
+        """Keep keyboard targets aligned with the latest robot state."""
+        for name, position in zip(msg.name, msg.position):
+            index = self.joint_indices.get(name)
+            if index is not None:
+                self.positions[index] = position
+
+    def publish_arm(self):
+        msg = JointTrajectory()
+        msg.joint_names = self.joint_names[:5]
+        point = JointTrajectoryPoint()
+        point.positions = self.positions[:5]
+        point.time_from_start = Duration(sec=0, nanosec=200_000_000)
+        msg.points = [point]
+        self.arm_publisher.publish(msg)
+
+    def publish_gripper(self):
+        msg = JointTrajectory()
+        msg.joint_names = ['gripper']
+        point = JointTrajectoryPoint()
+        point.positions = [self.positions[5]]
+        point.time_from_start = Duration(sec=0, nanosec=200_000_000)
+        msg.points = [point]
+        self.gripper_publisher.publish(msg)
+
+    def run(self):
+        settings = termios.tcgetattr(sys.stdin)
+        tty.setcbreak(sys.stdin.fileno())
+
+        print("""
+====================================
+       SO-101 KEYBOARD TELEOP
+====================================
+
+Shoulder Pan:
+    q / a
+
+Shoulder Lift:
+    w / s
+
+Elbow Flex:
+    e / d
+
+Wrist Flex:
+    r / f
+
+Wrist Roll:
+    t / g
+
+Gripper:
+    y / h
+
+Reset:
+    z
+
+Quit:
+    x
+
+Step: 0.05 rad
+====================================
+""")
+
+        try:
+            while rclpy.ok():
+                # Process /joint_states while waiting for keyboard input, so
+                # the next increment starts from the latest MoveIt position.
+                rclpy.spin_once(self, timeout_sec=0.0)
+                readable, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not readable:
+                    continue
+
+                key = sys.stdin.read(1)
+                arm_changed = False
+                gripper_changed = False
+
+                if key == 'q':
+                    self.positions[0] += self.step
+                    arm_changed = True
+                elif key == 'a':
+                    self.positions[0] -= self.step
+                    arm_changed = True
+
+                elif key == 'w':
+                    self.positions[1] += self.step
+                    arm_changed = True
+                elif key == 's':
+                    self.positions[1] -= self.step
+                    arm_changed = True
+
+                elif key == 'e':
+                    self.positions[2] += self.step
+                    arm_changed = True
+                elif key == 'd':
+                    self.positions[2] -= self.step
+                    arm_changed = True
+
+                elif key == 'r':
+                    self.positions[3] += self.step
+                    arm_changed = True
+                elif key == 'f':
+                    self.positions[3] -= self.step
+                    arm_changed = True
+
+                elif key == 't':
+                    self.positions[4] += self.step
+                    arm_changed = True
+                elif key == 'g':
+                    self.positions[4] -= self.step
+                    arm_changed = True
+
+                elif key == 'y':
+                    self.positions[5] += self.step
+                    gripper_changed = True
+                elif key == 'h':
+                    self.positions[5] -= self.step
+                    gripper_changed = True
+
+                elif key == 'z':
+                    self.positions = [0.0] * 6
+                    arm_changed = True
+                    gripper_changed = True
+
+                elif key == 'x':
+                    break
+
+                if arm_changed:
+                    self.publish_arm()
+                if gripper_changed:
+                    self.publish_gripper()
+
+        finally:
+            termios.tcsetattr(
+                sys.stdin,
+                termios.TCSADRAIN,
+                settings
+            )
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    node = SO101Teleop()
+
+    try:
+        node.run()
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
